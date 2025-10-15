@@ -2,25 +2,42 @@
 
 import numpy as np
 import torch
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional # Added Optional
+from dataclasses import dataclass # Added dataclass
 
 from sasaie_core.api.policy import Policy
 from sasaie_core.api.action import ActionType
 from sasaie_core.api.belief import RegimeBeliefs
 from sasaie_core.planning.efe import HierarchicalEFECalculator
+from sasaie_core.components.experts import ExpertBankManager, create_expert_bank # NEW IMPORTS
 
 class RegimeAwarePlanner:
     """
     Active Inference planner that reasons hierarchically across regimes.
+    
+    NOW INTEGRATED WITH EXPERT BANK for forecasting.
     """
-    def __init__(self, 
+    def __init__(self,
                  scales: List[int],
-                 vqvae, # HierarchicalRegimeVQVAE model
-                 action_space_size: int = 5):
+                 vqvae,
+                 action_space_size: int = 5,
+                 expert_config: Optional[Dict] = None): # Added expert_config
         
         self.scales = scales
         self.vqvae = vqvae
         self.action_space_size = action_space_size
+        
+        # === CHANGE: Real expert bank instead of MagicMock ===
+        if expert_config is None:
+            expert_config = {
+                'expert_type': 'ar',
+                'order': 10,
+                'max_experts': 100,
+                'pruning_threshold': 1000
+            }
+        
+        self.expert_bank = create_expert_bank(**expert_config)
+        # === END CHANGE ===
         
         self.efe_calculator = HierarchicalEFECalculator(scales, vqvae)
         
@@ -133,21 +150,55 @@ class RegimeAwarePlanner:
         best_policy = min(candidates, key=lambda p: p.efe)
         return best_policy
 
-    def learn_from_outcome(self, 
-                           policy: Policy,
-                           outcome: float,
-                           regime_codes: Dict[int, Tuple[int, float]]):
-        """
-        Updates internal models based on the outcome of an action.
-        """
-        self.action_history.append(policy.actions[0])
+    def generate_forecasts(self,
+                          regime_codes: Dict[int, Tuple[int, float]],
+                          horizon: int = 10) -> Dict[int, np.ndarray]:
+        '''
+        Generate forecasts using expert bank.
+        
+        === NEW METHOD ===
+        
+        Args:
+            regime_codes: Dict mapping scale -> (regime_code, distance)
+            horizon: Forecast length
+            
+        Returns:
+            Dict mapping scale -> forecast array
+        '''
+        forecasts = {}
+        
+        for scale, (code, distance) in regime_codes.items():
+            # Get forecast from appropriate expert
+            forecast = self.expert_bank.get_forecast(code, horizon)
+            forecasts[scale] = forecast
+        
+        return forecasts
+    
+    def learn_from_outcome(self,
+                          policy: Policy,
+                          outcome: float,
+                          regime_codes: Dict[int, Tuple[int, float]]):
+        '''
+        Update experts with observed outcomes.
+        
+        === MODIFIED: Now updates real experts ===
+        '''
+        # Record history (unchanged)
+        self.action_history.append(policy.actions[0] if policy.actions else 0.0)
         self.regime_history.append({s: c for s, (c, _) in regime_codes.items()})
         self.outcome_history.append(outcome)
         
-        # Example learning rule: if a policy resulted in a good outcome, cache it.
-        reward = -abs(outcome - 0.5) # Example reward
-        if reward > -0.1:
-            short_scale = self.scales[0]
-            if short_scale in regime_codes:
-                regime = regime_codes[short_scale][0]
-                self.regime_policy_cache[regime] = policy.actions
+        # === NEW: Update experts with observation ===
+        for scale, (code, distance) in regime_codes.items():
+            # Context includes regime confidence
+            context = {
+                'scale': scale,
+                'confidence': 1.0 / (1.0 + distance),
+                'timestep': len(self.outcome_history)
+            }
+            
+            self.expert_bank.update_expert(code, outcome, context)
+        # === END NEW ===
+        
+        # Advance bank timestep
+        self.expert_bank.step()

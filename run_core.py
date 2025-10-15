@@ -14,7 +14,6 @@ from sasaie_core.pipeline import MainPipeline
 from sasaie_core.models.hierarchical_regime_vq_vae import HierarchicalRegimeVQVAE
 from sasaie_core.components.planner import RegimeAwarePlanner
 from sasaie_trader.mqtt_consumer import MarketDataConsumer
-from sasaie_core.components.expert_bank import create_expert_bank # New import
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -56,13 +55,11 @@ if __name__ == "__main__":
         codebook_sizes=codebook_sizes
     )
 
-    # Expert Bank
-    expert_bank_manager = create_expert_bank(expert_type="ar", order=10) # Using AR forecaster for now
-
     # Planner
     planner = RegimeAwarePlanner(
         scales=scales,
-        vqvae=vqvae_model
+        vqvae=vqvae_model,
+        expert_config={'expert_type': 'ar', 'order': 10} # Pass expert_config
     )
 
     # 3. Instantiate the Main Pipeline
@@ -70,7 +67,6 @@ if __name__ == "__main__":
     main_pipeline = MainPipeline(
         vqvae_model=vqvae_model,
         planner=planner,
-        expert_bank_manager=expert_bank_manager, # Pass the expert bank manager
         scales=scales,
         mp_input_dim=mp_input_dim,
         initial_buffer_size=500 # This could also be in config

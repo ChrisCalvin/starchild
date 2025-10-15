@@ -1,0 +1,170 @@
+Strategic Plan: Refactoring Expert Bank Integration
+
+  1. Understanding the Goal
+
+  The primary objective is to refactor the existing monolithic Expert Bank implementation into a more modular and organized structure. This involves:
+   * Creating a new Python package sasaie_core/components/experts.
+   * Splitting the current sasaie_core/components/expert_bank.py into three distinct files within this new package: base_expert.py (for interfaces and metadata),
+     ar_forecaster.py (for the concrete AR implementation), and expert_bank.py (for the manager and FFG foundations). An __init__.py will also be created for the new
+     package.
+   * Modifying sasaie_core/components/planner.py to internally instantiate and manage the expert bank, and to expose new methods for generating forecasts and learning from
+     outcomes.
+   * Adjusting sasaie_core/pipeline.py to interact with these new planner methods, removing its direct dependency on an ExpertBankManager instance.
+   * Updating run_core.py to reflect the changes in planner and pipeline instantiation.
+   * Adapting existing unit tests to align with the new file structure and class interfaces.
+
+  2. Investigation & Analysis
+
+  Before any modifications, a thorough understanding of the current codebase and the proposed changes is crucial.
+
+  Investigation Steps:
+
+   1. Read `sasaie_core/components/expert_bank.py` (Current Monolithic File):
+       * Purpose: To precisely identify the boundaries of BaseExpert (and its @runtime_checkable decorator), ExpertMetadata, ARForecaster, ExpertBankManager,
+         ContinualExpertBank, FFG-related classes (FFGNode, FFGFactor, FFGExpertPlaceholder), and factory functions (create_ar_expert_factory, create_expert_bank).
+       * Critical Question: Are there any implicit dependencies or shared state within this single file that need explicit handling (e.g., ExpertBankManager directly using
+         ARForecaster without an import, which will become an inter-module import)?
+
+   2. Read `sasaie_core/components/planner.py`:
+       * Purpose: To understand the current RegimeAwarePlanner's __init__ method (which currently does not take an expert_bank parameter after previous refactoring), its
+         update_beliefs, generate_candidate_policies, select_best_policy, and learn_from_outcome methods.
+       * Search: Look for any remaining references to expert_bank or forecasts generation logic that might conflict with the proposed internal management.
+       * Critical Question: How will the new generate_forecasts and modified learn_from_outcome methods integrate with the existing logic, especially regarding how forecasts
+          are passed to select_best_policy?
+
+   3. Read `sasaie_core/pipeline.py`:
+       * Purpose: To examine the MainPipeline's __init__ and process methods.
+       * Search: Identify all current usages of self.expert_bank_manager (e.g., update_expert, get_ensemble_forecast, step).
+       * Critical Question: How will the calls to expert_bank_manager be replaced by calls to the planner? What new methods will planner need to expose to pipeline?
+
+   4. Read `run_core.py`:
+       * Purpose: To understand how RegimeAwarePlanner and MainPipeline are currently instantiated.
+       * Search: Locate the instantiation of expert_bank_manager and its passing to MainPipeline.
+       * Critical Question: What are the exact parameters currently passed to RegimeAwarePlanner and MainPipeline that will need to be adjusted?
+
+   5. Read Test Files (`tests/sasaie_core/unit/components/test_expert_bank.py`, `tests/sasaie_core/unit/components/test_planner.py`):
+       * Purpose: To understand existing test fixtures and test cases that will be affected by the file restructuring and interface changes.
+       * Critical Question: Which import statements, fixture definitions (e.g., planner fixture), and test assertions will need to be updated to reflect the new module
+         structure and class interfaces?
+
+  Critical Questions to Answer Before Work Begins:
+
+   * Precise Content Allocation: A definitive mapping of every class, function, and constant from the monolithic expert_bank.py to its new, dedicated file.
+   * Inter-module Imports: A complete list of all new import statements required in each of the newly created and modified files to resolve cross-module dependencies.
+   * `RegimeAwarePlanner.__init__` Signature: Confirm the exact new signature and internal logic for RegimeAwarePlanner.__init__ to ensure it correctly initializes the
+     internal expert bank.
+   * `MainPipeline.process` Integration: Detail how the process method will call the new planner methods (generate_forecasts, learn_from_outcome) and how data will flow
+     between them.
+   * `run_core.py` Instantiation: Specify the exact changes to RegimeAwarePlanner and MainPipeline instantiation in run_core.py.
+
+  3. Proposed Strategic Approach
+
+  The refactoring will be executed in a phased manner to ensure stability and allow for incremental verification.
+
+  Phase 1: Restructure Expert Bank Files
+
+  Objective: Establish the new sasaie_core/components/experts package and distribute the monolithic expert_bank.py content into its modular components.
+
+   1. Create Directory: Create the sasaie_core/components/experts directory.
+   2. Create `__init__.py`: Populate sasaie_core/components/experts/__init__.py with the provided EXPERTS_INIT content, ensuring all necessary components are exported.
+   3. Read Monolithic File: Read the entire content of the existing sasaie_core/components/expert_bank.py.
+   4. Create `base_expert.py`: Extract the BaseExpert protocol (including the @runtime_checkable decorator) and ExpertMetadata dataclass into
+      sasaie_core/components/experts/base_expert.py. Add all required typing imports (Dict, Any, List, Optional, Protocol, runtime_checkable) and dataclass import.
+   5. Create `ar_forecaster.py`: Extract the ARForecaster class into sasaie_core/components/experts/ar_forecaster.py. Add necessary imports (numpy, collections.deque,
+      typing.Dict, typing.Any, typing.Optional, and from .base_expert import BaseExpert).
+   6. Create `expert_bank.py`: Extract ExpertBankManager, ContinualExpertBank, FFG-related classes (FFGNode, FFGFactor, FFGExpertPlaceholder), and factory functions
+      (create_ar_expert_factory, create_expert_bank) into sasaie_core/components/experts/expert_bank.py. Add all required imports (numpy, torch, typing components, dataclass,
+       from .base_expert import BaseExpert, ExpertMetadata, from .ar_forecaster import ARForecaster).
+   7. Delete Old File: Remove the original monolithic sasaie_core/components/expert_bank.py.
+
+  Phase 2: Modify RegimeAwarePlanner
+
+  Objective: Update the planner to internally manage the expert bank and provide the necessary interfaces for the pipeline.
+
+   1. Read `planner.py`: Read the current content of sasaie_core/components/planner.py.
+   2. Update Imports: Add from sasaie_core.components.experts import ExpertBankManager, create_expert_bank to planner.py.
+   3. Modify `__init__`: Update the RegimeAwarePlanner.__init__ method to accept an expert_config: Optional[Dict] parameter. Inside __init__, remove any previous expert_bank
+      parameter and instantiate self.expert_bank = create_expert_bank(**expert_config) (with appropriate default handling if expert_config is None), as outlined in
+      PLANNER_MODIFICATIONS.
+   4. Add `generate_forecasts` Method: Implement the new generate_forecasts method within RegimeAwarePlanner as provided in PLANNER_MODIFICATIONS, which will use
+      self.expert_bank.get_forecast.
+   5. Modify `learn_from_outcome` Method: Update the learn_from_outcome method in RegimeAwarePlanner to include the logic for updating self.expert_bank with the observed
+      outcome and context, and to call self.expert_bank.step(), as detailed in PLANNER_MODIFICATIONS.
+
+  Phase 3: Modify MainPipeline
+
+  Objective: Adapt the main pipeline to interact with the refactored RegimeAwarePlanner's new methods.
+
+   1. Read `pipeline.py`: Read the current content of sasaie_core/pipeline.py.
+   2. Update Imports: Remove ExpertBankManager and create_expert_bank imports from pipeline.py.
+   3. Modify `__init__`: Remove the expert_bank_manager parameter from MainPipeline.__init__ and its internal storage.
+   4. Modify `process` Method:
+       * Remove all direct calls to self.expert_bank_manager.update_expert, self.expert_bank_manager.get_ensemble_forecast, and self.expert_bank_manager.step().
+       * Replace the forecast generation logic with a call to forecasts = self.planner.generate_forecasts(regime_codes, horizon=10).
+       * Ensure self.planner.learn_from_outcome is called with the correct parameters, which will now handle expert updates and stepping internally.
+
+  Phase 4: Update run_core.py
+
+  Objective: Adjust the application's entry point to correctly instantiate the refactored components.
+
+   1. Read `run_core.py`: Read the current content of run_core.py.
+   2. Update Imports: Remove the import of create_expert_bank.
+   3. Remove `expert_bank_manager` Instantiation: Delete the line that instantiates expert_bank_manager.
+   4. Update `Planner` Instantiation: Modify the RegimeAwarePlanner instantiation to include the expert_config parameter (e.g., expert_config={'expert_type': 'ar', 'order': 
+      10}).
+   5. Update `MainPipeline` Instantiation: Remove the expert_bank_manager parameter from the MainPipeline constructor call.
+
+  Phase 5: Update Tests
+
+  Objective: Ensure all relevant unit tests are adapted to the new architecture and continue to pass.
+
+   1. Update `tests/sasaie_core/unit/components/test_expert_bank.py`:
+       * Modify all import statements to reflect the new sasaie_core/components/experts package structure (e.g., from sasaie_core.components.experts.expert_bank import 
+         ExpertBankManager).
+   2. Update `tests/sasaie_core/unit/components/test_planner.py`:
+       * Modify the planner fixture to instantiate RegimeAwarePlanner with the new expert_config parameter.
+       * Review and update existing test cases (test_select_best_policy, test_learn_from_outcome) to ensure they correctly interact with the new planner methods and the
+         internally managed expert bank.
+       * Add new unit tests specifically for the RegimeAwarePlanner.generate_forecasts method.
+   3. Update `tests/sasaie_core/unit/test_pipeline.py` (if it exists):
+       * Modify the MainPipeline fixture to remove the expert_bank_manager parameter.
+       * Update tests to verify that MainPipeline correctly calls the new planner methods for forecasting and learning, and that the overall data flow remains correct.
+
+  4. Verification Strategy
+
+  The success of this refactoring will be verified through a multi-layered testing approach:
+
+   1. Unit Tests for Expert Bank Components:
+       * Execute pytest /home/chris/starchild/tests/sasaie_core/unit/components/test_experts/ (assuming tests are moved to match the new structure). All tests must pass.
+         This verifies the correct splitting and functionality of the individual expert modules.
+   2. Unit Tests for Planner:
+       * Execute pytest /home/chris/starchild/tests/sasaie_core/unit/components/test_planner.py. All tests must pass, including new tests for generate_forecasts and updated
+         tests for learn_from_outcome. This confirms the RegimeAwarePlanner's internal expert bank management and new interfaces.
+   3. Unit Tests for Pipeline:
+       * Execute pytest /home/chris/starchild/tests/sasaie_core/unit/test_pipeline.py (if it exists, otherwise create one). All tests must pass. This validates the
+         MainPipeline's correct interaction with the refactored planner.
+   4. Full Regression Test Suite:
+       * Execute pytest /home/chris/starchild/tests. All existing tests across the entire project must pass to ensure no regressions were introduced by the refactoring.
+   5. Code Quality Checks:
+       * Run project-specific linting (ruff check .) and type-checking (mypy .) tools to ensure adherence to coding standards and type correctness.
+   6. Manual Smoke Test:
+       * If feasible, run python run_core.py and observe the logging output to confirm the application starts, processes data, and logs expected actions without errors.
+
+  5. Anticipated Challenges & Considerations
+
+   * Import Resolution: The most significant challenge will be meticulously updating all import statements across multiple files. Incorrect relative or absolute imports will
+      lead to ModuleNotFoundError or ImportError.
+   * `RegimeAwarePlanner`'s `__init__` Transition: The shift from injecting an expert_bank_manager to RegimeAwarePlanner internally creating it is a breaking change. All
+     instantiations of RegimeAwarePlanner will need careful adjustment.
+   * Data Flow Consistency: Ensuring that the outcome and context passed to planner.learn_from_outcome are consistent with what expert_bank.update_expert expects will be
+     critical.
+   * Test Fixture Complexity: Updating pytest fixtures that depend on RegimeAwarePlanner or MainPipeline will require careful modification to match the new constructor
+     signatures and interaction patterns.
+   * Default `expert_config`: The expert_config in RegimeAwarePlanner's __init__ has default values. Ensuring these defaults are sensible and can be easily overridden via
+     configuration (e.g., from run_core.py) is important.
+   * Error Propagation: Verify that error handling mechanisms (e.g., try-except blocks) are still effective and correctly propagate exceptions through the refactored call
+     stack.
+   * Asynchronous Context: The run_core.py uses asyncio. Any changes must ensure compatibility and avoid blocking the event loop.
+   * Incremental Verification: The phased approach is crucial. Each phase should be thoroughly verified with tests before proceeding to the next to isolate and address
+     issues promptly.
+

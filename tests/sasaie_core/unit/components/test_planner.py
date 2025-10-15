@@ -33,7 +33,8 @@ def planner(mock_vqvae) -> RegimeAwarePlanner:
     """Provides a RegimeAwarePlanner instance with mocked dependencies."""
     return RegimeAwarePlanner(
         scales=TEST_SCALES,
-        vqvae=mock_vqvae
+        vqvae=mock_vqvae,
+        expert_config={'expert_type': 'ar', 'order': 2, 'min_observations': 5} # Use a simple AR config for testing
     )
 
 # --- Test Cases --- #
@@ -100,6 +101,31 @@ class TestRegimeAwarePlanner:
         assert ActionType.EXPLOIT in action_types
         assert ActionType.PREPARE in action_types
 
+    def test_generate_forecasts(self, planner, mocker):
+        """Test that generate_forecasts calls the expert bank and returns forecasts."""
+        # Arrange
+        regime_codes = {10: (3, 0.1), 50: (1, 0.4)}
+        horizon = 5
+        mock_forecast_10 = np.array([1.0, 1.1, 1.2, 1.3, 1.4])
+        mock_forecast_50 = np.array([2.0, 2.1, 2.2, 2.3, 2.4])
+
+        # Mock the internal expert_bank's get_forecast method
+        mock_expert_bank = mocker.patch.object(planner, 'expert_bank', autospec=True)
+        mock_expert_bank.get_forecast.side_effect = [mock_forecast_10, mock_forecast_50]
+
+        # Act
+        forecasts = planner.generate_forecasts(regime_codes, horizon)
+
+        # Assert
+        assert mock_expert_bank.get_forecast.call_count == 2
+        mock_expert_bank.get_forecast.assert_any_call(3, horizon)
+        mock_expert_bank.get_forecast.assert_any_call(1, horizon)
+        assert np.array_equal(forecasts[10], mock_forecast_10)
+        assert np.array_equal(forecasts[50], mock_forecast_50)
+        assert forecasts[10].shape == (horizon,)
+        assert forecasts[50].shape == (horizon,)
+
+
     def test_select_best_policy(self, planner, mocker):
         """Test that the policy with the minimum EFE is selected."""
         # Arrange
@@ -125,18 +151,25 @@ class TestRegimeAwarePlanner:
         assert best_policy.action_type == ActionType.EXPLORE
         assert best_policy.efe == 5.0
 
-    def test_learn_from_outcome(self, planner):
-        """Test that a successful policy is cached for the correct regime."""
+    def test_learn_from_outcome(self, planner, mocker):
+        """Test that learn_from_outcome updates the expert bank and steps it."""
         # Arrange
         regime = 3
         regime_codes = {10: (regime, 0.1)}
-        good_policy = Policy(action_type=ActionType.EXPLOIT, actions=[0.1, 0.2], horizon=2)
-        # An outcome close to 0.5 is considered good in the planner's reward function
-        good_outcome = 0.51 
+        dummy_policy = Policy(action_type=ActionType.EXPLOIT, actions=[0.1, 0.2], horizon=2)
+        dummy_outcome = 0.51
+
+        # Mock the internal expert_bank
+        mock_expert_bank = mocker.patch.object(planner, 'expert_bank', autospec=True)
 
         # Act
-        planner.learn_from_outcome(good_policy, good_outcome, regime_codes)
+        planner.learn_from_outcome(dummy_policy, dummy_outcome, regime_codes)
 
         # Assert
-        assert regime in planner.regime_policy_cache
-        assert planner.regime_policy_cache[regime] == good_policy.actions
+        mock_expert_bank.update_expert.assert_called_once()
+        mock_expert_bank.step.assert_called_once()
+        # Verify arguments to update_expert
+        call_args, call_kwargs = mock_expert_bank.update_expert.call_args
+        assert call_args[0] == regime # regime_id
+        assert call_args[1] == dummy_outcome # observation
+        assert call_args[2]['scale'] == 10 # context is the third positional argument

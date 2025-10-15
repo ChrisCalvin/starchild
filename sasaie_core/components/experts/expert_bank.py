@@ -1,320 +1,17 @@
 # Part of the new RegimeVAE architecture as of 2025-10-13
 
-"""
-Expert Bank Implementation for sasaie_core
-Complete modular system with clear evolution path to FFGs
-
-Structure:
-1. Base expert interface (Protocol)
-2. Simple AR forecaster (immediate use)
-3. Dynamic expert bank manager
-4. Evolution integration (EWC, pruning)
-5. FFG foundation (for future development)
-"""
-
-from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Protocol, runtime_checkable
-from dataclasses import dataclass, field
 import numpy as np
-from collections import deque
 import torch
-import torch.nn as nn
-from enum import Enum
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+
+from .base_expert import BaseExpert, ExpertMetadata
+from .ar_forecaster import ARForecaster
 
 
-# ============================================================================
-# 1. BASE EXPERT INTERFACE
-# ============================================================================
-
-@runtime_checkable
-class BaseExpert(Protocol):
-    """
-    Protocol defining the interface all experts must implement.
-    
-    This ensures modularity and allows different expert types
-    (AR, FFG, neural, etc.) to be used interchangeably.
-    """
-    
-    @property
-    def regime_id(self) -> int:
-        """The regime this expert specializes in"""
-        ...
-    
-    @property
-    def n_observations(self) -> int:
-        """Number of observations this expert has processed"""
-        ...
-    
-    def update(self, observation: float, context: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Update the expert's internal model with new observation.
-        
-        Args:
-            observation: New data point
-            context: Optional context (e.g., other features, metadata)
-        """
-        ...
-    
-    def predict(self, horizon: int) -> np.ndarray:
-        """
-        Generate forecast for given horizon.
-        
-        Args:
-            horizon: Number of steps to forecast
-            
-        Returns:
-            Array of predictions of length horizon
-        """
-        ...
-    
-    def get_parameters(self) -> Dict[str, Any]:
-        """
-        Retrieve current model parameters.
-        
-        Used for:
-        - Serialization (saving/loading)
-        - EWC Fisher matrix computation
-        - Expert comparison
-        """
-        ...
-    
-    def set_parameters(self, params: Dict[str, Any]) -> None:
-        """
-        Set model parameters.
-        
-        Args:
-            params: Dictionary of parameters to set
-        """
-        ...
-    
-    def clone(self) -> 'BaseExpert':
-        """
-        Create a deep copy of this expert.
-        
-        Used when branching experts for new regimes.
-        """
-        ...
-    
-    def get_uncertainty(self) -> float:
-        """
-        Estimate prediction uncertainty.
-        
-        Returns:
-            Scalar uncertainty measure (e.g., prediction variance)
-        """
-        ...
-
-
-@dataclass
-class ExpertMetadata:
-    """Tracks expert performance and lifecycle"""
-    regime_id: int
-    created_at: int  # Timestep
-    n_updates: int = 0
-    total_error: float = 0.0
-    last_active: int = 0
-    is_frozen: bool = False  # For EWC
-    fisher_information: Optional[Dict[str, torch.Tensor]] = None
-
-
-# ============================================================================
-# 2. AR FORECASTER (Simple, Immediate Implementation)
-# ============================================================================
-
-class ARForecaster:
-    """
-    Autoregressive forecaster using Ordinary Least Squares.
-    
-    Simple, interpretable, and computationally efficient.
-    Good baseline expert for immediate deployment.
-    """
-    
-    def __init__(self, 
-                 regime_id: int,
-                 order: int = 10,
-                 min_observations: int = 20,
-                 buffer_size: int = 1000):
-        """
-        Initialize AR forecaster.
-        
-        Args:
-            regime_id: Regime this expert specializes in
-            order: AR model order (number of lags)
-            min_observations: Minimum data before fitting
-            buffer_size: Maximum history to retain
-        """
-        self._regime_id = regime_id
-        self.order = order
-        self.min_observations = min_observations
-        
-        # Data buffer (circular for efficiency)
-        self.history = deque(maxlen=buffer_size)
-        
-        # Model parameters
-        self.coefficients: Optional[np.ndarray] = None
-        self.intercept: float = 0.0
-        
-        # Uncertainty estimation
-        self.residual_variance: float = 1.0
-        
-        # Metadata
-        self._n_observations = 0
-        self._needs_refit = True
-    
-    @property
-    def regime_id(self) -> int:
-        return self._regime_id
-    
-    @property
-    def n_observations(self) -> int:
-        return self._n_observations
-    
-    def update(self, observation: float, context: Optional[Dict[str, Any]] = None) -> None:
-        """Add observation and mark for refitting"""
-        self.history.append(observation)
-        self._n_observations += 1
-        self._needs_refit = True
-        
-        # Refit periodically (every 10 observations)
-        if self._n_observations % 10 == 0:
-            self.fit()
-    
-    def fit(self) -> None:
-        """
-        Fit AR model using OLS.
-        
-        Solves: y_t = β₀ + β₁*y_{t-1} + ... + βₚ*y_{t-p} + ε_t
-        """
-        if len(self.history) < self.min_observations:
-            return
-        
-        # Prepare design matrix
-        data = np.array(list(self.history))
-        X, y = self._create_lagged_features(data)
-        
-        if len(X) < self.order:
-            return
-        
-        # Ordinary Least Squares
-        # β = (X'X)^(-1) X'y
-        try:
-            XtX = X.T @ X
-            Xty = X.T @ y
-            
-            # Add regularization for numerical stability
-            ridge_penalty = 1e-6 * np.eye(X.shape[1])
-            self.coefficients = np.linalg.solve(XtX + ridge_penalty, Xty)
-            
-            # Estimate intercept
-            predictions = X @ self.coefficients
-            self.intercept = np.mean(y - predictions)
-            
-            # Estimate residual variance (for uncertainty)
-            residuals = y - (predictions + self.intercept)
-            self.residual_variance = np.var(residuals)
-            
-            self._needs_refit = False
-            
-        except np.linalg.LinAlgError:
-            # Singular matrix - keep previous parameters
-            pass
-    
-    def _create_lagged_features(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Create lagged feature matrix for AR model.
-        
-        Returns:
-            X: [n_samples, order] lagged features
-            y: [n_samples] target values
-        """
-        n = len(data)
-        X = np.zeros((n - self.order, self.order))
-        y = np.zeros(n - self.order)
-        
-        for i in range(self.order, n):
-            X[i - self.order] = data[i-self.order:i][::-1]  # Most recent first
-            y[i - self.order] = data[i]
-        
-        return X, y
-    
-    def predict(self, horizon: int) -> np.ndarray:
-        """
-        Generate multi-step ahead forecast.
-        
-        Uses iterative prediction: ŷ_{t+h} depends on ŷ_{t+h-1}
-        """
-        if self.coefficients is None or self._needs_refit:
-            self.fit()
-        
-        if self.coefficients is None:
-            # Fallback: return last observation
-            if len(self.history) > 0:
-                return np.full(horizon, self.history[-1])
-            return np.zeros(horizon)
-        
-        # Initialize with recent history
-        forecast = []
-        window = list(self.history)[-self.order:]
-        
-        for _ in range(horizon):
-            # Predict next value
-            if len(window) >= self.order:
-                x = np.array(window[-self.order:])[::-1]
-                pred = self.intercept + np.dot(self.coefficients, x)
-            else:
-                # Not enough history - use mean
-                pred = np.mean(window) if window else 0.0
-            
-            forecast.append(pred)
-            window.append(pred)
-        
-        return np.array(forecast)
-    
-    def get_parameters(self) -> Dict[str, Any]:
-        """Serialize model state"""
-        return {
-            'regime_id': self._regime_id,
-            'order': self.order,
-            'coefficients': self.coefficients.tolist() if self.coefficients is not None else None,
-            'intercept': float(self.intercept),
-            'residual_variance': float(self.residual_variance),
-            'history': list(self.history),
-            'n_observations': self._n_observations
-        }
-    
-    def set_parameters(self, params: Dict[str, Any]) -> None:
-        """Deserialize model state"""
-        self._regime_id = params['regime_id']
-        self.order = params['order']
-        
-        if params['coefficients'] is not None:
-            self.coefficients = np.array(params['coefficients'])
-        
-        self.intercept = params['intercept']
-        self.residual_variance = params['residual_variance']
-        self.history = deque(params['history'], maxlen=self.history.maxlen)
-        self._n_observations = params['n_observations']
-        self._needs_refit = False
-    
-    def clone(self) -> 'ARForecaster':
-        """Create independent copy"""
-        new_expert = ARForecaster(
-            regime_id=self._regime_id,
-            order=self.order,
-            min_observations=self.min_observations,
-            buffer_size=self.history.maxlen
-        )
-        new_expert.set_parameters(self.get_parameters())
-        return new_expert
-    
-    def get_uncertainty(self) -> float:
-        """Return prediction standard deviation"""
-        return np.sqrt(self.residual_variance)
-
-
-# ============================================================================
+# ============================================================================ 
 # 3. EXPERT BANK MANAGER
-# ============================================================================
+# ============================================================================ 
 
 class ExpertBankManager:
     """
@@ -366,7 +63,7 @@ class ExpertBankManager:
         
         return self.experts[regime_id]
     
-    def _create_expert(self, regime_id: int) -> None:
+    def _create_expert(self, regime_id: int) -> None: 
         """Create and register new expert"""
         # Check capacity
         if len(self.experts) >= self.max_experts:
@@ -515,7 +212,12 @@ class ExpertBankManager:
         }
     
     def save_state(self) -> Dict[str, Any]:
-        """Serialize entire bank"""
+        """
+        Serialize entire bank.
+        
+        Note: This currently only saves metadata and ARForecaster parameters.
+        FFG-based experts would require more complex serialization.
+        """
         return {
             'experts': {
                 rid: expert.get_parameters()
@@ -527,7 +229,8 @@ class ExpertBankManager:
                     'created_at': meta.created_at,
                     'n_updates': meta.n_updates,
                     'last_active': meta.last_active,
-                    'is_frozen': meta.is_frozen
+                    'is_frozen': meta.is_frozen,
+                    'fisher_information': {k: v.tolist() for k, v in meta.fisher_information.items()} if meta.fisher_information else None
                 }
                 for rid, meta in self.metadata.items()
             },
@@ -550,12 +253,15 @@ class ExpertBankManager:
         # Recreate metadata
         for regime_id, meta_dict in state['metadata'].items():
             regime_id = int(regime_id)
+            # Handle fisher_information deserialization
+            if meta_dict.get('fisher_information'):
+                meta_dict['fisher_information'] = {k: torch.tensor(v) for k, v in meta_dict['fisher_information'].items()}
             self.metadata[regime_id] = ExpertMetadata(**meta_dict)
 
 
-# ============================================================================
+# ============================================================================ 
 # 4. INTEGRATION WITH CONTINUAL LEARNING (EWC)
-# ============================================================================
+# ============================================================================ 
 
 class ContinualExpertBank(ExpertBankManager):
     """
@@ -609,9 +315,9 @@ class ContinualExpertBank(ExpertBankManager):
             print(f"[ExpertBank] Computed Fisher information for expert {regime_id}")
 
 
-# ============================================================================
+# ============================================================================ 
 # 5. FFG FOUNDATION (For Future Development)
-# ============================================================================
+# ============================================================================ 
 
 class FFGNode:
     """
@@ -668,9 +374,9 @@ class FFGExpertPlaceholder:
     # ...
 
 
-# ============================================================================
+# ============================================================================ 
 # 6. FACTORY FUNCTIONS
-# ============================================================================
+# ============================================================================ 
 
 def create_ar_expert_factory(order: int = 10) -> callable:
     """
@@ -717,9 +423,9 @@ def create_expert_bank(expert_type: str = "ar", **kwargs) -> ExpertBankManager:
         raise ValueError(f"Unknown expert type: {expert_type}")
 
 
-# ============================================================================
+# ============================================================================ 
 # 7. USAGE EXAMPLE
-# ============================================================================
+# ============================================================================ 
 
 if __name__ == "__main__":
     print("="*70)

@@ -6,10 +6,9 @@ from unittest.mock import MagicMock
 from collections import deque
 from typing import Dict, Any, Optional # Added imports
 
-from sasaie_core.components.expert_bank import (
-    BaseExpert,
-    ExpertMetadata,
-    ARForecaster,
+from sasaie_core.components.experts.base_expert import BaseExpert, ExpertMetadata
+from sasaie_core.components.experts.ar_forecaster import ARForecaster
+from sasaie_core.components.experts.expert_bank import (
     ExpertBankManager,
     ContinualExpertBank,
     create_ar_expert_factory,

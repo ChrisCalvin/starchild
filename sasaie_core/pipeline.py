@@ -13,8 +13,7 @@ from typing import Dict, List, Any
 
 from sasaie_core.models.hierarchical_regime_vq_vae import HierarchicalRegimeVQVAE
 from sasaie_core.components.planner import RegimeAwarePlanner
-from sasaie_trader.preprocessing import HierarchicalStreamingMP
-from sasaie_core.components.expert_bank import ExpertBankManager, create_expert_bank # New import
+from sasaie_core.components.perception import HierarchicalStreamingMP # Changed import path
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +26,12 @@ class MainPipeline:
     def __init__(self, 
                  vqvae_model: HierarchicalRegimeVQVAE, 
                  planner: RegimeAwarePlanner, 
-                 expert_bank_manager: ExpertBankManager, # New parameter
                  scales: List[int], 
                  mp_input_dim: int, 
                  initial_buffer_size: int = 500):
         
         self.vqvae = vqvae_model
         self.planner = planner
-        self.expert_bank_manager = expert_bank_manager # Store new parameter
         self.scales = scales
         self.mp_input_dim = mp_input_dim
         self.initial_buffer_size = initial_buffer_size
@@ -57,10 +54,11 @@ class MainPipeline:
         """Main processing method for a single timestep."""
         try:
             payload = json.loads(raw_payload.decode())
-            price = float(payload.get('price'))
-            if price is None:
+            price_val = payload.get('price')
+            if price_val is None:
                 logger.warning("Received MQTT message without a 'price' field.")
                 return
+            price = float(price_val)
 
             self.ts_buffer.append(price)
 
@@ -92,18 +90,9 @@ class MainPipeline:
             beliefs = self.planner.update_beliefs(regime_codes)
             logger.debug(f"Updated Beliefs: {beliefs}")
 
-            # --- Expert Bank Update & Forecasting --- #
-            # Update experts with current observation
-            for scale, (regime_code, _) in regime_codes.items():
-                self.expert_bank_manager.update_expert(regime_code, price)
-
-            # 5. Generate forecasts from the expert bank
-            # Use ensemble forecast based on regime probabilities
-            forecasts = {}
-            for scale, belief in beliefs.items():
-                forecasts[scale] = self.expert_bank_manager.get_ensemble_forecast(
-                    belief.regime_probabilities, horizon=10
-                )
+            # --- Forecasting --- #
+            # 5. Generate forecasts from the planner
+            forecasts = self.planner.generate_forecasts(regime_codes, horizon=10)
             logger.debug(f"Generated Forecasts: {forecasts}")
 
             # 6. Select the best policy by minimizing EFE
@@ -112,9 +101,6 @@ class MainPipeline:
 
             # 7. Learn from the outcome (simplified)
             self.planner.learn_from_outcome(best_policy, price, regime_codes)
-            
-            # Advance expert bank timestep
-            self.expert_bank_manager.step()
 
         except json.JSONDecodeError:
             logger.error("Failed to decode JSON from MQTT message.")

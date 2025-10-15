@@ -4,8 +4,6 @@ import torch
 import numpy as np
 from typing import Dict, Any, List, Tuple
 from datetime import datetime, timezone
-import stumpy
-from collections import deque
 
 class DataPreprocessor:
     """Processes raw data from a connector into a model-ready format."""
@@ -132,66 +130,5 @@ class HummingbotDataPreprocessor(DataPreprocessor):
             }
         }
 
-# ============================================================================
-# REGIME-BASED PREPROCESSING (New Architecture)
-# ============================================================================
 
-class HierarchicalStreamingMP:
-    """
-    Multi-scale streaming matrix profile computation using STUMPY.
-    """
-    def __init__(self, initial_ts: np.ndarray, scales: List[int] = [10, 50, 200]):
-        self.scales = scales
-        self.streams = {}
-        self.current_mps = {}
-        
-        # Initialize streaming MP for each scale
-        for scale in scales:
-            if len(initial_ts) >= scale:
-                self.streams[scale] = stumpy.stumpi(
-                    initial_ts,
-                    m=scale,
-                    egress=True  # Sliding window mode
-                )
-                self.current_mps[scale] = self.streams[scale].P_
-    
-    def update(self, new_point: float) -> Dict[int, np.ndarray]:
-        """
-        Update all scales with a new data point.
-        Returns: Dict mapping scale to its updated matrix profile.
-        """
-        updated_mps = {}
-        for scale, stream in self.streams.items():
-            stream.update(new_point)
-            self.current_mps[scale] = stream.P_
-            updated_mps[scale] = stream.P_
-        return updated_mps
-    
-    def get_latest_profile(self, scale: int) -> np.ndarray:
-        """Get the current matrix profile for a specific scale."""
-        return self.current_mps.get(scale, np.array([]))
-
-
-class StreamingRegimeDetector:
-    """
-    Online changepoint detection based on the latest matrix profile value.
-    A high value indicates a new pattern (discord) has appeared.
-    """
-    def __init__(self, initial_ts: np.ndarray, m: int = 50):
-        self.m = m
-        self.stream = stumpy.stumpi(initial_ts, m=m)
-        self.regime_change_threshold = 2.5 # This should be tuned (e.g., 3 standard deviations above the mean)
-        
-    def update(self, new_point: float) -> Tuple[bool, float]:
-        """
-        Check for a regime change by analyzing the latest matrix profile value.
-        Returns: A tuple of (is_regime_change, latest_mp_value).
-        """
-        self.stream.update(new_point)
-        latest_mp_value = self.stream.P_[-1]
-        
-        # A simple threshold-based change detection
-        is_change = latest_mp_value > self.regime_change_threshold
-        
-        return is_change, latest_mp_value
 
