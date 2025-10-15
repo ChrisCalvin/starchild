@@ -26,18 +26,14 @@ def mock_vqvae():
     vqvae.layers[1].codebook_size = TEST_CODEBOOK_SIZES[1]
     return vqvae
 
-@pytest.fixture
-def mock_expert_bank():
-    """Provides a mock expert bank."""
-    return {i: MagicMock() for i in range(max(TEST_CODEBOOK_SIZES))}
+
 
 @pytest.fixture
-def planner(mock_vqvae, mock_expert_bank) -> RegimeAwarePlanner:
+def planner(mock_vqvae) -> RegimeAwarePlanner:
     """Provides a RegimeAwarePlanner instance with mocked dependencies."""
     return RegimeAwarePlanner(
         scales=TEST_SCALES,
-        vqvae=mock_vqvae,
-        expert_bank=mock_expert_bank
+        vqvae=mock_vqvae
     )
 
 # --- Test Cases --- #

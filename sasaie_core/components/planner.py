@@ -16,12 +16,10 @@ class RegimeAwarePlanner:
     def __init__(self, 
                  scales: List[int],
                  vqvae, # HierarchicalRegimeVQVAE model
-                 expert_bank: Dict[int, any], # Maps regime code to a generative model (e.g., a FactorGraph)
                  action_space_size: int = 5):
         
         self.scales = scales
         self.vqvae = vqvae
-        self.expert_bank = expert_bank
         self.action_space_size = action_space_size
         
         self.efe_calculator = HierarchicalEFECalculator(scales, vqvae)
