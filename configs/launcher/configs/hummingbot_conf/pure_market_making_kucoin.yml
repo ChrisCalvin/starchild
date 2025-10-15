@@ -1,0 +1,16 @@
+strategy: pure_market_making
+exchange: kucoin
+market: BTC-USDT
+
+# Spreads
+bid_spread: 0.01
+ask_spread: 0.01
+
+# Order amount
+order_amount: 10
+
+# Order refresh time
+order_refresh_time: 30.0
+
+# Inventory skew
+inventory_skew_enabled: false

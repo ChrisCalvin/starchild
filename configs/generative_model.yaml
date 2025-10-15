@@ -1,0 +1,36 @@
+# Part of the new RegimeVAE architecture as of 2025-10-13
+# This file defines the structure and configuration for the generative model.
+
+model_type: hierarchical_regime_vqvae
+
+scales:
+  - name: short_term
+    window_size: 10
+    codebook_size: 16
+    description: "Fast micro-patterns (rules)"
+  - name: medium_term
+    window_size: 50
+    codebook_size: 12
+    description: "Intermediate patterns"
+    conditions_on: short_term
+  - name: long_term
+    window_size: 200
+    codebook_size: 8
+    description: "Long-term regimes"
+    conditions_on: medium_term
+
+perception:
+  type: streaming_matrix_profile
+  use_floss: true
+  novelty_threshold: 0.3
+
+planner:
+  type: regime_aware_active_inference
+  efe_calculation: hierarchical
+  exploration_bonus: 0.1
+
+evolution:
+  enabled: true
+  codebook_growth: dynamic
+  continual_learning: ewc
+  maintenance_interval: 100

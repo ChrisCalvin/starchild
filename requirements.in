@@ -1,0 +1,27 @@
+# Core application dependencies
+torch
+torchvision
+torchaudio
+numpy
+PyYAML
+
+# New dependencies for RegimeVAE architecture
+stumpy
+
+# Old dependencies (to be removed once fully decoupled)
+# nflows
+# torch-geometric
+# pyro-ppl
+# kymatio
+
+pyro-ppl # Still needed for now for probabilistic programming aspects
+
+torchdiffeq
+httpx
+hummingbot-api-client
+
+click
+rich
+docker
+git+https://github.com/hummingbot/hbot-remote-client-py.git
+python-dotenv

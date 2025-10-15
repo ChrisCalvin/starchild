@@ -1,0 +1,11 @@
+# Global Configuration for Hummingbot
+
+# Exchange API Keys
+# KuCoin
+kucoin_api_key: ""
+kucoin_api_secret: ""
+kucoin_passphrase: ""
+
+# Global Settings
+log_level: INFO
+data_dir: "data/"

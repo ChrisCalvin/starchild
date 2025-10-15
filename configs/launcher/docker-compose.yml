@@ -1,0 +1,103 @@
+
+services:
+  hummingbot:
+    build:
+      context: ../../  # Build from the project root
+      dockerfile: hummingbot.Dockerfile
+    container_name: hbot-sasaie-${COMPOSE_PROJECT_NAME:-production}
+    command: tail -f /dev/null
+    volumes:
+      - ./configs/hummingbot_conf:/home/hummingbot/conf:rw
+      - ./data/hummingbot_data:/home/hummingbot/data:rw
+      - ./logs/hummingbot_logs:/home/hummingbot/logs:rw
+      - ${PROJECT_ROOT}/scripts:/home/hummingbot/scripts:ro
+    environment:
+      - CONFIG_PASSWORD=${HUMMINGBOT_PASSWORD}
+      - KUCOIN_API_KEY=${KUCOIN_API_KEY}
+      - KUCOIN_API_SECRET=${KUCOIN_API_SECRET}
+      - KUCOIN_API_PASSPHRASE=${KUCOIN_API_PASSPHRASE}
+    networks:
+      - sasaie-network
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    labels:
+      - "sasaie.service=hummingbot"
+      - "sasaie.role=trading"
+
+  hummingbot-api:
+    image: hummingbot/hummingbot-api:latest
+    container_name: sasaie-hummingbot-api-${COMPOSE_PROJECT_NAME:-production}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./configs/hummingbot_conf:/usr/src/app/conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - API_USERNAME=${API_USERNAME:-admin}
+      - API_PASSWORD=${API_PASSWORD:-admin}
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/hummingbot_db
+      - MQTT_HOST=mqtt
+      - MQTT_PORT=1883
+    networks:
+      - sasaie-network
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+      - postgres
+    labels:
+      - "sasaie.service=hummingbot-api"
+      - "sasaie.role=api"
+
+  postgres:
+    image: postgres:13
+    container_name: sasaie-postgres-${COMPOSE_PROJECT_NAME:-production}
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=hummingbot_db
+    volumes:
+      - ./data/postgres_data:/var/lib/postgresql/data
+    networks:
+      - sasaie-network
+    restart: unless-stopped
+    labels:
+      - "sasaie.service=postgres"
+      - "sasaie.role=database"
+
+  mqtt:
+    image: emqx/emqx:latest
+    container_name: sasaie-mqtt-${COMPOSE_PROJECT_NAME:-production}
+    ports:
+      - "1883:1883"
+    restart: unless-stopped
+    networks:
+      - sasaie-network
+    labels:
+      - "sasaie.service=mqtt"
+      - "sasaie.role=messaging"
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx_ctl", "status"]
+      interval: 5s
+      timeout: 15s
+      retries: 5
+
+  sasaie-core:
+    build:
+      context: ../../  # Build from the project root
+      dockerfile: Dockerfile
+    container_name: sasaie-core-${COMPOSE_PROJECT_NAME:-production}
+    networks:
+      - sasaie-network
+    restart: unless-stopped
+    depends_on:
+      mqtt:
+        condition: service_healthy
+    labels:
+      - "sasaie.service=sasaie-core"
+      - "sasaie.role=application"
+
+networks:
+  sasaie-network:
+    driver: bridge
+

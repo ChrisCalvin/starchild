@@ -1,0 +1,3 @@
+strategy: data_collector_strategy
+exchange: coinbase_advanced_trade
+market: ETH-USD

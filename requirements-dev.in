@@ -1,0 +1,10 @@
+-c requirements.txt
+
+# Development and testing dependencies
+pytest
+pytest-mock
+pytest-asyncio
+black
+mypy
+pip-tools
+python-dotenv
