@@ -4,6 +4,7 @@ torchvision
 torchaudio
 numpy
 PyYAML
+pandas # Added dependency
 
 # New dependencies for RegimeVAE architecture
 stumpy

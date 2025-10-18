@@ -5,18 +5,17 @@ model_type: hierarchical_regime_vqvae
 
 scales:
   - name: short_term
-    window_size: 10
+    window_size: 3
     codebook_size: 16
-    description: "Fast micro-patterns (rules)"
+    
   - name: medium_term
-    window_size: 50
+    window_size: 4
     codebook_size: 12
-    description: "Intermediate patterns"
     conditions_on: short_term
+    
   - name: long_term
-    window_size: 200
+    window_size: 4 # Max window size for 5 data points is 4
     codebook_size: 8
-    description: "Long-term regimes"
     conditions_on: medium_term
 
 perception:
@@ -34,3 +33,9 @@ evolution:
   codebook_growth: dynamic
   continual_learning: ewc
   maintenance_interval: 100
+
+training:
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.001
+  commitment_cost: 0.25

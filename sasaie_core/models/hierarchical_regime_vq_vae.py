@@ -221,15 +221,59 @@ class HierarchicalRegimeVQVAE(nn.Module):
             nn.MultiheadAttention(latent_dim, num_heads=4, batch_first=True) for _ in range(self.n_levels - 1)
         ])
 
-    def forward(self, multi_scale_features: Dict[int, torch.Tensor]):
+    def forward(self, multi_scale_features: Dict[int, torch.Tensor]) -> Tuple[Dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """
         Full hierarchical forward pass for end-to-end training.
-        This is complex and involves calculating losses at each level.
-        (Implementation to be detailed based on training strategy)
+        Orchestrates forward pass through all ContinualVQVAELayers,
+        calculating reconstruction, VQ, and commitment losses.
         """
-        # This method would orchestrate a full training pass, calculating
-        # reconstruction, commitment, and composition losses across all levels.
-        pass
+        reconstructions = {}
+        all_vq_loss = torch.tensor(0.0, device=multi_scale_features[self.scales[0]].device)
+        all_commitment_loss = torch.tensor(0.0, device=multi_scale_features[self.scales[0]].device)
+        
+        z_contexts = {} # To pass quantized latents from lower to higher levels
+
+        for level, scale in enumerate(self.scales):
+            x = multi_scale_features[scale]
+            layer = self.layers[level]
+
+            # Encode the input features for this level
+            z_e = layer.encoder(x)
+
+            # Apply cross-attention context from the level below
+            if level > 0:
+                # Use the quantized latent from the level below as context
+                context_z = z_contexts[level - 1]
+                
+                # Ensure context_z has a batch dimension for MultiheadAttention
+                # and match dimensions if necessary
+                if context_z.dim() == 2: # (batch_size, latent_dim)
+                    context_z = context_z.unsqueeze(1) # (batch_size, 1, latent_dim)
+                
+                # z_e also needs to be (batch_size, seq_len, embed_dim) for MultiheadAttention
+                # Assuming z_e is (batch_size, latent_dim)
+                query = z_e.unsqueeze(1) # (batch_size, 1, latent_dim)
+
+                attended_z, _ = self.cross_attentions[level-1](
+                    query, context_z, context_z
+                )
+                z_e = z_e + attended_z.squeeze(1) # Residual connection, squeeze back to (batch_size, latent_dim)
+
+            # Quantize the context-aware encoding
+            # layer.forward returns x_recon, z_q, commitment_loss, indices
+            x_recon, z_q, commitment_loss_layer, _ = layer.forward(x) # Pass original x for reconstruction target
+            
+            # VQ loss (codebook loss) - encourage codebook embeddings to move towards encoder outputs
+            # This is (z_q - z_e.detach())**2
+            vq_loss_layer = F.mse_loss(z_q, z_e.detach())
+
+            reconstructions[scale] = x_recon
+            all_vq_loss += vq_loss_layer
+            all_commitment_loss += commitment_loss_layer
+            
+            z_contexts[level] = z_q # Store quantized latent for next level's context
+                
+        return reconstructions, all_vq_loss, all_commitment_loss
 
     def hierarchical_encode(self, mp_features: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
         """
